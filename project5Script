@@ -1,0 +1,783 @@
+Script started on Fri 28 Apr 2017 03:32:34 PM EDT
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# cd /usr/src/ubuntu-xenial/kernel/
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/kernelroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/kernel# cat sys.c
+/*
+ *  linux/kernel/sys.c
+ *
+ *  Copyright (C) 1991, 1992  Linus Torvalds
+ */
+
+#include <linux/export.h>
+#include <linux/mm.h>
+#include <linux/utsname.h>
+#include <linux/mman.h>
+#include <linux/reboot.h>
+#include <linux/prctl.h>
+#include <linux/highuid.h>
+#include <linux/fs.h>
+#include <linux/kmod.h>
+#include <linux/perf_event.h>
+#include <linux/resource.h>
+#include <linux/kernel.h>
+#include <linux/workqueue.h>
+#include <linux/capability.h>
+#include <linux/device.h>
+#include <linux/key.h>
+#include <linux/times.h>
+#include <linux/posix-timers.h>
+#include <linux/security.h>
+#include <linux/dcookies.h>
+#include <linux/suspend.h>
+#include <linux/tty.h>
+#include <linux/signal.h>
+#include <linux/cn_proc.h>
+#include <linux/getcpu.h>
+#include <linux/task_io_accounting_ops.h>
+#include <linux/seccomp.h>
+#include <linux/cpu.h>
+#include <linux/personality.h>
+#include <linux/ptrace.h>
+#include <linux/fs_struct.h>
+#include <linux/file.h>
+#include <linux/mount.h>
+#include <linux/gfp.h>
+#include <linux/syscore_ops.h>
+#include <linux/version.h>
+#include <linux/ctype.h>
+
+#include <linux/compat.h>
+#include <linux/syscalls.h>
+#include <linux/kprobes.h>
+#include <linux/user_namespace.h>
+#include <linux/binfmts.h>
+
+#include <linux/sched.h>
+#include <linux/rcupdate.h>
+#include <linux/uidgid.h>
+#include <linux/cred.h>
+
+#include <linux/kmsg_dump.h>
+/* Move somewhere else to avoid recompiling? */
+#include <generated/utsrelease.h>
+
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <asm/unistd.h>
+
+#ifndef SET_UNALIGN_CTL
+# define SET_UNALIGN_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef GET_UNALIGN_CTL
+# define GET_UNALIGN_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef SET_FPEMU_CTL
+# define SET_FPEMU_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef GET_FPEMU_CTL
+# define GET_FPEMU_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef SET_FPEXC_CTL
+# define SET_FPEXC_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef GET_FPEXC_CTL
+# define GET_FPEXC_CTL(a, b)	(-EINVAL)
+#endif
+#ifndef GET_ENDIAN
+# define GET_ENDIAN(a, b)	(-EINVAL)
+#endif
+#ifndef SET_ENDIAN
+# define SET_ENDIAN(a, b)	(-EINVAL)
+#endif
+#ifndef GET_TSC_CTL
+# define GET_TSC_CTL(a)		(-EINVAL)
+#endif
+#ifndef SET_TSC_CTL
+# define SET_TSC_CTL(a)		(-EINVAL)
+#endif
+#ifndef MPX_ENABLE_MANAGEMENT
+# define MPX_ENABLE_MANAGEMENT()	(-EINVAL)
+#endif
+#ifndef MPX_DISABLE_MANAGEMENT
+# define MPX_DISABLE_MANAGEMENT()	(-EINVAL)
+#endif
+#ifndef GET_FP_MODE
+# define GET_FP_MODE(a)		(-EINVAL)
+#endif
+#ifndef SET_FP_MODE
+# define SET_FP_MODE(a,b)	(-EINVAL)
+#endif
+
+/***************************************************************
+LOTS OF STUFF CUT OUT OF THE FILE.
+***************************************************************/
+
+/* Written by: Mitch Stark (mjs73), Kyle Reitsma (kr29), and Ethan Clark (elc3)
+ * Date: April 24, 2017
+ * Print out team name to kernel log using printk function
+ */
+SYSCALL_DEFINE0(printteamname)
+{
+	printk("Mitch-Ethan-Kyle");
+	return 0;
+}
+
+/* Written by Mitch Stark (mjs73), Kyle Reitsma (kr29), and Ethan Clark (elc3)
+ * Date: April 27, 2017
+ * Receive: task struct rootptr, task array, int nr, and int level
+ * Gets the information required about a given process, then call recursively on child processes
+ * Return: Process count of process and all its descendants
+ */
+
+int do_tasktree( struct task_struct * rootptr, struct taskinfo __user * task_array, int nr, int level ){
+
+	//Used in the for_each
+ 	struct list_head * list;
+ 	struct task_struct * child;
+
+	//Stop finding processes if is at or below zero
+ 	if ( nr <= 0 ){
+    		return 0;
+ 	}
+
+	//retrieve process info
+	task_array[0].pid=rootptr->pid;  		
+	task_array[0].parent_pid=rootptr->parent->pid;  
+	task_array[0].state=rootptr->state;		
+  	task_array[0].level=level;		
+ 	task_array[0].first_child_pid = 0;
+ 	task_array[0].uid=rootptr->cred->uid.val;		
+
+	//determine the size of comm (or max of 63)
+	int comm_size;
+	if (sizeof(rootptr->comm) > 63) {
+		comm_size = sizeof(rootptr->comm);
+	} else {
+		comm_size = 63;
+	}
+	
+	//copy to task_info
+	int i;
+  	for( i = 0; i < comm_size; i++ ){
+		task_array[0].comm[i] = rootptr->comm[i];  
+	}
+	
+	//setup for loop
+	int count = 1;
+	int temp;
+  
+	//iterate through children
+  	list_for_each(list, &rootptr->children){
+
+    		child=list_entry(list, struct task_struct, sibling);
+
+		//first child found
+   	 	if(count==1){
+      			task_array[0].first_child_pid = child->pid;
+    		}
+
+		//recur
+    		temp = do_tasktree(child, &task_array[count], nr - count, level + 1);
+	 	
+		//nr dropped below zero, stop the loop
+		if(temp==0){
+      			break;
+    		}
+
+		//add to descendants to count
+    		count += temp;
+  	}
+
+	return count;
+}
+
+/* Written by: Mitch Stark (mjs73), Kyle Reitsma (kr29), and Ethan Clark (elc3)
+ * Date: April 27, 2017
+ * Receive: task infor buf (from user space) with int nr, and int rootpid
+ * Initialize required variables, check for bad arguments, and call do_tasktree
+ * Return: count of related processes
+ */
+
+SYSCALL_DEFINE3( tasktree, struct taskinfo __user *, buf, int, nr, int, rootpid){
+	//task struct for the starting process
+	struct task_struct * root;
+
+	//task array (made in kernel space)
+	struct taskinfo * task_array;
+	
+	//check arguments
+  	if(buf == NULL || nr < 0){
+		return -EINVAL;
+	} else {
+		printk("tasktree() passed initial parameter checks");
+	}
+	
+	//lock?
+	read_lock(&tasklist_lock);
+
+	//retrieve the task struct of the root pointer
+	root = find_task_by_vpid(rootpid);
+
+	//allocate the memory
+	task_array = kmalloc( nr * sizeof( struct taskinfo), GFP_KERNEL );
+  
+	//call do_tasktree (recursive) and returns the total count of related processes
+	int process_count =  do_tasktree( root, task_array, nr, 0 );
+	
+	//verify access
+	if (!access_ok(VERIFY_WRITE, buf, sizeof(struct taskinfo))){
+		 return -EFAULT;
+	}
+
+	//copy memory to user space, to be used in test file for printing
+ 	copy_to_user( buf, task_array, nr * sizeof( struct taskinfo) );
+
+	//unlock?
+	read_unlock(&tasklist_lock); 
+	
+	//return allocated space to kernel
+	kfree(task_array);
+
+	//return process count
+	return process_count;
+}
+
+SYSCALL_DEFINE3(setpriority, int, which, int, who, int, niceval)
+{
+	struct task_struct *g, *p;
+	struct user_struct *user;
+	const struct cred *cred = current_cred();
+	int error = -EINVAL;
+	struct pid *pgrp;
+	kuid_t uid;
+
+	if (which > PRIO_USER || which < PRIO_PROCESS)
+		goto out;
+
+	/* normalize: avoid signed division (rounding problems) */
+	error = -ESRCH;
+	if (niceval < MIN_NICE)
+		niceval = MIN_NICE;
+	if (niceval > MAX_NICE)
+		niceval = MAX_NICE;
+
+	rcu_read_lock();
+	read_lock(&tasklist_lock);
+	switch (which) {
+	case PRIO_PROCESS:
+		if (who)
+			p = find_task_by_vpid(who);
+		else
+			p = current;
+		if (p)
+			error = set_one_prio(p, niceval, error);
+		break;
+	case PRIO_PGRP:
+		if (who)
+			pgrp = find_vpid(who);
+		else
+			pgrp = task_pgrp(current);
+		do_each_pid_thread(pgrp, PIDTYPE_PGID, p) {
+			error = set_one_prio(p, niceval, error);
+		} while_each_pid_thread(pgrp, PIDTYPE_PGID, p);
+		break;
+	case PRIO_USER:
+		uid = make_kuid(cred->user_ns, who);
+		user = cred->user;
+		if (!who)
+			uid = cred->uid;
+		else if (!uid_eq(uid, cred->uid)) {
+			user = find_user(uid);
+			if (!user)
+				goto out_unlock;	/* No processes for this user */
+		}
+		do_each_thread(g, p) {
+			if (uid_eq(task_uid(p), uid) && task_pid_vnr(p))
+				error = set_one_prio(p, niceval, error);
+		} while_each_thread(g, p);
+		if (!uid_eq(uid, cred->uid))
+			free_uid(user);		/* For find_user() */
+		break;
+	}
+out_unlock:
+	read_unlock(&tasklist_lock);
+	rcu_read_unlock();
+out:
+	return error;
+}
+
+/***************************************************************
+LOTS OF STUFF CUT OUT OF THE FILE.
+***************************************************************/
+
+#endif /* CONFIG_COMPAT */
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/kernelroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/kernel# cd ../arch/x86/entry/syscalls
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/arch/x86/entry/syscallsroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/arch/x86/entry/syscalls# cat syscall_64.tbl
+#
+# 64-bit system call numbers and entry vectors
+#
+# The format is:
+# <number> <abi> <name> <entry point>
+#
+# The abi is "common", "64" or "x32" for this file.
+#
+0	common	read			sys_read
+1	common	write			sys_write
+2	common	open			sys_open
+
+/***************************************************************
+LOTS OF STUFF CUT OUT OF THE FILE.
+***************************************************************/
+
+318	common	getrandom		sys_getrandom
+319	common	memfd_create		sys_memfd_create
+320	common	kexec_file_load		sys_kexec_file_load
+321	common	bpf			sys_bpf
+322	64	execveat		stub_execveat
+323	common	userfaultfd		sys_userfaultfd
+324	common	membarrier		sys_membarrier
+325	common	mlock2			sys_mlock2
+326	common	printteamname		sys_printteamname
+327	common	tasktree		sys_tasktree
+
+#
+# x32-specific system call numbers start at 512 to avoid cache impact
+# for native 64-bit operation.
+#
+512	x32	rt_sigaction		compat_sys_rt_sigaction
+513	x32	rt_sigreturn		stub_x32_rt_sigreturn
+514	x32	ioctl			compat_sys_ioctl
+
+/***************************************************************
+LOTS OF STUFF CUT OUT OF THE FILE.
+***************************************************************/
+
+544	x32	io_submit		compat_sys_io_submit
+545	x32	execveat		stub_x32_execveat
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/arch/x86/entry/syscallsroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/arch/x86/entry/syscalls# cd ../../../../include//linux/
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/include/linuxroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/include/linux# cat syscalls.h
+/*
+ * syscalls.h - Linux syscall interfaces (non-arch-specific)
+ *
+ * Copyright (c) 2004 Randy Dunlap
+ * Copyright (c) 2004 Open Source Development Labs
+ *
+ * This file is released under the GPLv2.
+ * See the file COPYING for more details.
+ */
+
+#ifndef _LINUX_SYSCALLS_H
+#define _LINUX_SYSCALLS_H
+
+struct epoll_event;
+struct iattr;
+struct inode;
+struct iocb;
+struct io_event;
+struct iovec;
+struct itimerspec;
+struct itimerval;
+struct kexec_segment;
+struct linux_dirent;
+struct linux_dirent64;
+struct list_head;
+struct mmap_arg_struct;
+struct msgbuf;
+struct user_msghdr;
+struct mmsghdr;
+struct msqid_ds;
+struct new_utsname;
+struct nfsctl_arg;
+struct __old_kernel_stat;
+struct oldold_utsname;
+struct old_utsname;
+struct pollfd;
+struct rlimit;
+struct rlimit64;
+struct rusage;
+struct sched_param;
+struct sched_attr;
+struct sel_arg_struct;
+struct semaphore;
+struct sembuf;
+struct shmid_ds;
+struct sockaddr;
+struct stat;
+struct stat64;
+struct statfs;
+struct statfs64;
+struct __sysctl_args;
+struct sysinfo;
+struct timespec;
+struct timeval;
+struct timex;
+struct timezone;
+struct tms;
+struct utimbuf;
+struct mq_attr;
+struct compat_stat;
+struct compat_timeval;
+struct robust_list_head;
+struct getcpu_cache;
+struct old_linux_dirent;
+struct perf_event_attr;
+struct file_handle;
+struct sigaltstack;
+union bpf_attr;
+
+#include <linux/types.h>
+#include <linux/aio_abi.h>
+#include <linux/capability.h>
+#include <linux/signal.h>
+#include <linux/list.h>
+#include <linux/bug.h>
+#include <linux/sem.h>
+#include <asm/siginfo.h>
+#include <linux/unistd.h>
+#include <linux/quota.h>
+#include <linux/key.h>
+#include <trace/syscall.h>
+#include <linux/taskinfo.h>
+
+/*
+ * __MAP - apply a macro to syscall arguments
+ * __MAP(n, m, t1, a1, t2, a2, ..., tn, an) will expand to
+ *    m(t1, a1), m(t2, a2), ..., m(tn, an)
+ * The first argument must be equal to the amount of type/name
+ * pairs given.  Note that this list of pairs (i.e. the arguments
+ * of __MAP starting at the third one) is in the same format as
+ * for SYSCALL_DEFINE<n>/COMPAT_SYSCALL_DEFINE<n>
+ */
+#define __MAP0(m,...)
+#define __MAP1(m,t,a) m(t,a)
+#define __MAP2(m,t,a,...) m(t,a), __MAP1(m,__VA_ARGS__)
+#define __MAP3(m,t,a,...) m(t,a), __MAP2(m,__VA_ARGS__)
+
+/***************************************************************
+LOTS OF STUFF CUT OUT OF THE FILE.
+***************************************************************/
+
+asmlinkage long sys_gettimeofday(struct timeval __user *tv,
+				struct timezone __user *tz);
+asmlinkage long sys_settimeofday(struct timeval __user *tv,
+				struct timezone __user *tz);
+asmlinkage long sys_adjtimex(struct timex __user *txc_p);
+
+asmlinkage long sys_times(struct tms __user *tbuf);
+
+/*********HERE ARE THE DECLARATIONS************/
+asmlinkage long sys_printteamname(void);
+asmlinkage long sys_tasktree(struct taskinfo __user *arg, int nr, int rootpid);
+/*********HERE ARE THE DECLARATIONS************/
+
+asmlinkage long sys_gettid(void);
+asmlinkage long sys_nanosleep(struct timespec __user *rqtp, struct timespec __user *rmtp);
+asmlinkage long sys_alarm(unsigned int seconds);
+asmlinkage long sys_getpid(void);
+
+/*****************************************************
+LOTS OF STUFF CUT OUT OF THE FILE
+*****************************************************/
+
+asmlinkage long sys_membarrier(int cmd, int flags);
+
+asmlinkage long sys_mlock2(unsigned long start, size_t len, int flags);
+
+#endif
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/include/linuxroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/include/linux# cd /usr/include
+]0;root@mradmin-VirtualBox: /usr/includeroot@mradmin-VirtualBox:/usr/include# cat tasktree.h
+#define TASKTREE syscall(327);]0;root@mradmin-VirtualBox: /usr/includeroot@mradmin-VirtualBox:/usr/include# cat taskinfo.h
+#include <unistd.h>
+#include <sys/types.h>
+struct taskinfo {
+	pid_t pid;
+	pid_t parent_pid;
+	pid_t first_child_pid;
+	long state;
+	long uid;
+	char comm[64];
+	int level;
+};]0;root@mradmin-VirtualBox: /usr/includeroot@mradmin-VirtualBox:/usr/include# cd /usr/src/ubuntu-xenial/include/linux/
+]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/include/linuxroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/include/linux# cat taskinfo.h
+struct taskinfo {
+
+	pid_t pid;
+	pid_t parent_pid;
+	pid_t first_child_pid;
+	long state;
+	long uid;
+	char comm[64];
+	int level;
+
+};]0;root@mradmin-VirtualBox: /usr/src/ubuntu-xenial/include/linuxroot@mradmin-VirtualBox:/usr/src/ubuntu-xenial/include/linux# cd /home/mradmin/
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# cat realtest.c
+/*
+ *Created by: Mitch Stark (mjs73), Kyle Reitsma (kr29), Ethan Clark (elc3)
+ *Date: 4/27/17
+ *Runs the system call on the Linux Kernel
+ */
+#include <tasktree.h>
+#include <taskinfo.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+//Main function to test run the system call
+
+int main(void) {
+	//system call puts process info into this pointer
+	struct taskinfo *processes;
+		
+	//number of processes to look at
+	int nr = 100;
+	
+	//allocate process memory
+	processes = malloc(nr*sizeof(struct taskinfo));
+			
+	//run system call
+	int num = syscall(327, processes, nr, 2);
+		
+	printf("Number of related processes found: %i\n", num);
+
+	//setup for loop
+	int i;
+	int j;
+
+	//iterate through all processes
+	for ( i = 0; i < nr; i++ )
+	{  
+		for( j = 0; j < processes[i].level; j++ ) {
+			printf( "\t" ) ; 
+		}
+		printf( "pid %i, parent_pid %i, first_child %i, state %lu, uid %lu name %s\n", processes[i].pid, processes[i].parent_pid, processes[i].first_child_pid, processes[i].state, processes[i].uid, processes[i].comm);
+	}
+	
+	//free memory
+	free(processes);
+	return 0;
+}
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# gcc realtest.c -o main
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# ./main
+Number of related processes found: 100
+pid 2, parent_pid 0, first_child 3, state 1, uid 0 name kthreadd
+	pid 3, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/0
+	pid 5, parent_pid 2, first_child 0, state 1, uid 0 name kworker/0:0H
+	pid 6, parent_pid 2, first_child 0, state 1, uid 0 name kworker/u16:0
+	pid 7, parent_pid 2, first_child 0, state 1, uid 0 name rcu_sched
+	pid 8, parent_pid 2, first_child 0, state 1, uid 0 name rcu_bh
+	pid 9, parent_pid 2, first_child 0, state 1, uid 0 name migration/0
+	pid 10, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/0
+	pid 11, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/1
+	pid 12, parent_pid 2, first_child 0, state 1, uid 0 name migration/1
+	pid 13, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/1
+	pid 14, parent_pid 2, first_child 0, state 1, uid 0 name kworker/1:0
+	pid 15, parent_pid 2, first_child 0, state 1, uid 0 name kworker/1:0H
+	pid 16, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/2
+	pid 17, parent_pid 2, first_child 0, state 1, uid 0 name migration/2
+	pid 18, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/2
+	pid 20, parent_pid 2, first_child 0, state 1, uid 0 name kworker/2:0H
+	pid 21, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/3
+	pid 22, parent_pid 2, first_child 0, state 1, uid 0 name migration/3
+	pid 23, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/3
+	pid 25, parent_pid 2, first_child 0, state 1, uid 0 name kworker/3:0H
+	pid 26, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/4
+	pid 27, parent_pid 2, first_child 0, state 1, uid 0 name migration/4
+	pid 28, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/4
+	pid 30, parent_pid 2, first_child 0, state 1, uid 0 name kworker/4:0H
+	pid 31, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/5
+	pid 32, parent_pid 2, first_child 0, state 1, uid 0 name migration/5
+	pid 33, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/5
+	pid 35, parent_pid 2, first_child 0, state 1, uid 0 name kworker/5:0H
+	pid 36, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/6
+	pid 37, parent_pid 2, first_child 0, state 1, uid 0 name migration/6
+	pid 38, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/6
+	pid 39, parent_pid 2, first_child 0, state 1, uid 0 name kworker/6:0
+	pid 40, parent_pid 2, first_child 0, state 1, uid 0 name kworker/6:0H
+	pid 41, parent_pid 2, first_child 0, state 1, uid 0 name watchdog/7
+	pid 42, parent_pid 2, first_child 0, state 1, uid 0 name migration/7
+	pid 43, parent_pid 2, first_child 0, state 1, uid 0 name ksoftirqd/7
+	pid 44, parent_pid 2, first_child 0, state 1, uid 0 name kworker/7:0
+	pid 45, parent_pid 2, first_child 0, state 1, uid 0 name kworker/7:0H
+	pid 46, parent_pid 2, first_child 0, state 1, uid 0 name kdevtmpfs
+	pid 47, parent_pid 2, first_child 0, state 1, uid 0 name netns
+	pid 48, parent_pid 2, first_child 0, state 1, uid 0 name perf
+	pid 49, parent_pid 2, first_child 0, state 1, uid 0 name khungtaskd
+	pid 50, parent_pid 2, first_child 0, state 1, uid 0 name writeback
+	pid 51, parent_pid 2, first_child 0, state 1, uid 0 name ksmd
+	pid 52, parent_pid 2, first_child 0, state 1, uid 0 name khugepaged
+	pid 53, parent_pid 2, first_child 0, state 1, uid 0 name crypto
+	pid 54, parent_pid 2, first_child 0, state 1, uid 0 name kintegrityd
+	pid 55, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 56, parent_pid 2, first_child 0, state 1, uid 0 name kblockd
+	pid 57, parent_pid 2, first_child 0, state 1, uid 0 name ata_sff
+	pid 58, parent_pid 2, first_child 0, state 1, uid 0 name md
+	pid 59, parent_pid 2, first_child 0, state 1, uid 0 name devfreq_wq
+	pid 61, parent_pid 2, first_child 0, state 1, uid 0 name kworker/0:1
+	pid 63, parent_pid 2, first_child 0, state 1, uid 0 name kswapd0
+	pid 64, parent_pid 2, first_child 0, state 1, uid 0 name vmstat
+	pid 65, parent_pid 2, first_child 0, state 1, uid 0 name fsnotify_mark
+	pid 66, parent_pid 2, first_child 0, state 1, uid 0 name ecryptfs-kthrea
+	pid 82, parent_pid 2, first_child 0, state 1, uid 0 name kthrotld
+	pid 83, parent_pid 2, first_child 0, state 1, uid 0 name acpi_thermal_pm
+	pid 84, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 85, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 86, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 87, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 88, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 89, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 90, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 91, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 92, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 93, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 94, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 95, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 96, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 97, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 98, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 99, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 100, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 101, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 102, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 103, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 104, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 105, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 106, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 107, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 108, parent_pid 2, first_child 0, state 1, uid 0 name scsi_eh_0
+	pid 109, parent_pid 2, first_child 0, state 1, uid 0 name scsi_tmf_0
+	pid 110, parent_pid 2, first_child 0, state 1, uid 0 name scsi_eh_1
+	pid 111, parent_pid 2, first_child 0, state 1, uid 0 name scsi_tmf_1
+	pid 118, parent_pid 2, first_child 0, state 1, uid 0 name ipv6_addrconf
+	pid 131, parent_pid 2, first_child 0, state 1, uid 0 name deferwq
+	pid 132, parent_pid 2, first_child 0, state 1, uid 0 name charger_manager
+	pid 133, parent_pid 2, first_child 0, state 1, uid 0 name kworker/7:1
+	pid 134, parent_pid 2, first_child 0, state 1, uid 0 name bioset
+	pid 135, parent_pid 2, first_child 0, state 1, uid 0 name kworker/1:1
+	pid 141, parent_pid 2, first_child 0, state 1, uid 0 name kworker/3:1
+	pid 187, parent_pid 2, first_child 0, state 1, uid 0 name kpsmoused
+	pid 193, parent_pid 2, first_child 0, state 1, uid 0 name kworker/6:1
+	pid 195, parent_pid 2, first_child 0, state 1, uid 0 name kworker/5:1
+	pid 197, parent_pid 2, first_child 0, state 1, uid 0 name kworker/7:1H
+	pid 198, parent_pid 2, first_child 0, state 1, uid 0 name kworker/0:2
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# ^C
+
+/************************************************************************
+MODIFIED REALTEST TO START WITH PID 1 INSTEAD OF 2.
+************************************************************************/
+
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# cat realtest.c
+/*
+ *Created by: Mitch Stark (mjs73), Kyle Reitsma (kr29), Ethan Clark (elc3)
+ *Date: 4/27/17
+ *Runs the system call on the Linux Kernel
+ */
+#include <tasktree.h>
+#include <taskinfo.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+//Main function to test run the system call
+
+int main(void) {
+	//system call puts process info into this pointer
+	struct taskinfo *processes;
+		
+	//number of processes to look at
+	int nr = 100;
+	
+	//allocate process memory
+	processes = malloc(nr*sizeof(struct taskinfo));
+			
+	//run system call
+	int num = syscall(327, processes, nr, 1);
+		
+	printf("Number of related processes found: %i\n", num);
+
+	//setup for loop
+	int i;
+	int j;
+
+	//iterate through all processes
+	for ( i = 0; i < nr; i++ )
+	{  
+		for( j = 0; j < processes[i].level; j++ ) {
+			printf( "\t" ) ; 
+		}
+		printf( "pid %i, parent_pid %i, first_child %i, state %lu, uid %lu name %s\n", processes[i].pid, processes[i].parent_pid, processes[i].first_child_pid, processes[i].state, processes[i].uid, processes[i].comm);
+	}
+	
+	//free memory
+	free(processes);
+	return 0;
+}
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# gcc realtest.c -o main
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# ./main
+Number of related processes found: 67
+pid 1, parent_pid 0, first_child 262, state 1, uid 0 name systemd
+	pid 262, parent_pid 1, first_child 0, state 1, uid 0 name systemd-journal
+	pid 310, parent_pid 1, first_child 0, state 1, uid 0 name systemd-udevd
+	pid 586, parent_pid 1, first_child 0, state 1, uid 110 name whoopsie
+	pid 589, parent_pid 1, first_child 0, state 1, uid 106 name dbus-daemon
+	pid 654, parent_pid 1, first_child 0, state 1, uid 104 name rsyslogd
+	pid 660, parent_pid 1, first_child 0, state 1, uid 0 name cron
+	pid 661, parent_pid 1, first_child 0, state 1, uid 0 name ModemManager
+	pid 664, parent_pid 1, first_child 0, state 1, uid 0 name systemd-logind
+	pid 667, parent_pid 1, first_child 798, state 1, uid 0 name NetworkManager
+		pid 798, parent_pid 667, first_child 0, state 1, uid 0 name dhclient
+		pid 811, parent_pid 667, first_child 0, state 1, uid 65534 name dnsmasq
+	pid 668, parent_pid 1, first_child 0, state 1, uid 0 name accounts-daemon
+	pid 763, parent_pid 1, first_child 0, state 1, uid 0 name polkitd
+	pid 767, parent_pid 1, first_child 903, state 1, uid 0 name lightdm
+		pid 903, parent_pid 767, first_child 0, state 1, uid 0 name Xorg
+		pid 927, parent_pid 767, first_child 938, state 1, uid 0 name lightdm
+			pid 938, parent_pid 927, first_child 984, state 1, uid 1000 name lxsession
+				pid 984, parent_pid 938, first_child 0, state 1, uid 1000 name ssh-agent
+				pid 1016, parent_pid 938, first_child 0, state 1, uid 1000 name openbox
+				pid 1020, parent_pid 938, first_child 1413, state 1, uid 1000 name lxpanel
+					pid 1413, parent_pid 1020, first_child 1414, state 1, uid 1000 name lxterminal
+						pid 1414, parent_pid 1413, first_child 0, state 1, uid 1000 name gnome-pty-helpe
+						pid 1415, parent_pid 1413, first_child 1431, state 1, uid 1000 name bash
+							pid 1431, parent_pid 1415, first_child 1432, state 1, uid 0 name sudo
+								pid 1432, parent_pid 1431, first_child 1433, state 1, uid 0 name su
+									pid 1433, parent_pid 1432, first_child 2176, state 1, uid 0 name bash
+										pid 2176, parent_pid 1433, first_child 2177, state 1, uid 0 name script
+											pid 2177, parent_pid 2176, first_child 2192, state 1, uid 0 name bash
+												pid 2192, parent_pid 2177, first_child 0, state 0, uid 0 name main
+						pid 2132, parent_pid 1413, first_child 2144, state 1, uid 1000 name bash
+							pid 2144, parent_pid 2132, first_child 2145, state 1, uid 0 name sudo
+								pid 2145, parent_pid 2144, first_child 2146, state 1, uid 0 name su
+									pid 2146, parent_pid 2145, first_child 0, state 1, uid 0 name bash
+					pid 1982, parent_pid 1020, first_child 0, state 1, uid 1000 name firefox
+				pid 1022, parent_pid 938, first_child 0, state 1, uid 1000 name pcmanfm
+	pid 902, parent_pid 1, first_child 0, state 1, uid 0 name irqbalance
+	pid 933, parent_pid 1, first_child 935, state 1, uid 1000 name systemd
+		pid 935, parent_pid 933, first_child 0, state 1, uid 1000 name (sd-pam)
+	pid 988, parent_pid 1, first_child 0, state 1, uid 1000 name dbus-daemon
+	pid 987, parent_pid 1, first_child 0, state 1, uid 1000 name dbus-launch
+	pid 1000, parent_pid 1, first_child 0, state 1, uid 1000 name gvfsd
+	pid 1005, parent_pid 1, first_child 0, state 1, uid 1000 name gvfsd-fuse
+	pid 1026, parent_pid 1, first_child 0, state 1, uid 1000 name ssh-agent
+	pid 1029, parent_pid 1, first_child 0, state 1, uid 1000 name xfce4-power-man
+	pid 1030, parent_pid 1, first_child 0, state 1, uid 1000 name xfce4-power-man
+	pid 1032, parent_pid 1, first_child 0, state 1, uid 1000 name update-notifier
+	pid 1034, parent_pid 1, first_child 0, state 1, uid 1000 name nm-applet
+	pid 1036, parent_pid 1, first_child 0, state 1, uid 1000 name light-locker
+	pid 1040, parent_pid 1, first_child 0, state 1, uid 1000 name xfconfd
+	pid 1049, parent_pid 1, first_child 0, state 1, uid 1000 name dconf-service
+	pid 1083, parent_pid 1, first_child 0, state 1, uid 0 name upowerd
+	pid 1099, parent_pid 1, first_child 0, state 1, uid 1000 name menu-cached
+	pid 1113, parent_pid 1, first_child 0, state 1, uid 0 name udisksd
+	pid 1104, parent_pid 1, first_child 0, state 1, uid 1000 name gvfs-udisks2-vo
+	pid 1122, parent_pid 1, first_child 0, state 1, uid 1000 name gvfs-afc-volume
+	pid 1128, parent_pid 1, first_child 0, state 1, uid 1000 name gvfs-mtp-volume
+	pid 1133, parent_pid 1, first_child 0, state 1, uid 1000 name gvfs-gphoto2-vo
+	pid 1138, parent_pid 1, first_child 0, state 1, uid 1000 name gvfs-goa-volume
+	pid 1147, parent_pid 1, first_child 0, state 1, uid 1000 name gvfsd-trash
+	pid 1144, parent_pid 1, first_child 0, state 1, uid 1000 name indicator-appli
+	pid 1179, parent_pid 1, first_child 0, state 1, uid 0 name agetty
+	pid 1189, parent_pid 1, first_child 0, state 1, uid 109 name ntpd
+	pid 1924, parent_pid 1, first_child 0, state 1, uid 0 name leafpad
+	pid 1930, parent_pid 1, first_child 0, state 1, uid 0 name dbus-daemon
+	pid 1929, parent_pid 1, first_child 0, state 1, uid 0 name dbus-launch
+	pid 2033, parent_pid 1, first_child 0, state 1, uid 1000 name gconfd-2
+]0;root@mradmin-VirtualBox: /home/mradminroot@mradmin-VirtualBox:/home/mradmin# exit
+
+Script done on Fri 28 Apr 2017 03:38:13 PM EDT
